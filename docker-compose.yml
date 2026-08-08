@@ -6,7 +6,7 @@ services:
     container_name: media-relay-bot
     restart: unless-stopped
     env_file:
-      - ./.env
+      - ${MEDIA_RELAY_ENV_FILE:-./.env}
     environment:
       HOME: /tmp
       TMPDIR: /data/tmp
