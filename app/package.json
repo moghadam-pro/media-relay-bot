@@ -1,0 +1,14 @@
+{
+  "name": "media-relay-bot",
+  "version": "0.5.0",
+  "private": true,
+  "type": "module",
+  "description": "Private Telegram media relay with expiring direct-download links",
+  "scripts": {
+    "start": "node src/index.mjs",
+    "check": "node --check src/index.mjs && node --check src/media-downloader.mjs && node --check src/download-store.mjs && node --check src/linkedin-fallback.mjs"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}
