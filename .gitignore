@@ -1,9 +1,11 @@
 .env
+config/.env
 runtime/
 *.pem
 *.key
 *.log
 cookies.txt
 **/cookies/*.txt
+*.backup-*
 .DS_Store
 node_modules/
