@@ -27,6 +27,21 @@ const YOUTUBE_COOKIE_FILE =
 const INSTAGRAM_COOKIE_FILE =
   process.env.INSTAGRAM_COOKIE_FILE?.trim() || "";
 
+const X_COOKIE_FILE =
+  process.env.X_COOKIE_FILE?.trim() || "";
+
+const LINKEDIN_COOKIE_FILE =
+  process.env.LINKEDIN_COOKIE_FILE?.trim() || "";
+
+const REDDIT_COOKIE_FILE =
+  process.env.REDDIT_COOKIE_FILE?.trim() || "";
+
+const REDDIT_CLIENT_ID =
+  process.env.REDDIT_CLIENT_ID?.trim() || "";
+
+const REDDIT_USER_AGENT =
+  process.env.REDDIT_USER_AGENT?.trim() || "";
+
 const REDDIT_REFRESH_TOKEN =
   process.env.REDDIT_REFRESH_TOKEN?.trim() || "";
 
@@ -97,6 +112,16 @@ function isInstagram(rawUrl) {
   return (
     hostnameMatches(hostname, "instagram.com") ||
     hostname === "instagr.am"
+  );
+}
+
+function isX(rawUrl) {
+  const hostname =
+    normalisedHostname(rawUrl);
+
+  return (
+    hostnameMatches(hostname, "x.com") ||
+    hostnameMatches(hostname, "twitter.com")
   );
 }
 
@@ -174,6 +199,18 @@ function cookieSourceForUrl(rawUrl) {
 
   if (isInstagram(rawUrl) && INSTAGRAM_COOKIE_FILE) {
     return INSTAGRAM_COOKIE_FILE;
+  }
+
+  if (isLinkedIn(rawUrl) && LINKEDIN_COOKIE_FILE) {
+    return LINKEDIN_COOKIE_FILE;
+  }
+
+  if (isReddit(rawUrl) && REDDIT_COOKIE_FILE) {
+    return REDDIT_COOKIE_FILE;
+  }
+
+  if (isX(rawUrl) && X_COOKIE_FILE) {
+    return X_COOKIE_FILE;
   }
 
   return null;
@@ -453,7 +490,7 @@ async function runGalleryDl({
   if (isInstagram(url)) {
     args.push(
       "-o",
-      "extractor.instagram.previews=true",
+      "extractor.instagram.previews=false",
       "-o",
       "extractor.instagram.videos=true",
     );
@@ -465,8 +502,19 @@ async function runGalleryDl({
       "extractor.reddit.previews=true",
     );
 
-    if (REDDIT_REFRESH_TOKEN) {
+    const redditOauthReady =
+      REDDIT_CLIENT_ID &&
+      REDDIT_USER_AGENT &&
+      REDDIT_REFRESH_TOKEN;
+
+    if (redditOauthReady) {
       args.push(
+        "-o",
+        "extractor.reddit.api=oauth",
+        "-o",
+        `extractor.reddit.client-id=${REDDIT_CLIENT_ID}`,
+        "-o",
+        `extractor.reddit.user-agent-oauth=${REDDIT_USER_AGENT}`,
         "-o",
         `extractor.reddit.refresh-token=${REDDIT_REFRESH_TOKEN}`,
       );
@@ -507,6 +555,314 @@ function classifyMime(filePath) {
     "application/octet-stream",
     "file",
   ];
+}
+
+async function probeMediaStreams(filePath) {
+  const result = await runProcess(
+    "ffprobe",
+    [
+      "-v",
+      "error",
+      "-show_entries",
+      "stream=index,codec_type,codec_name,profile,pix_fmt,width,height,sample_rate,channels",
+      "-of",
+      "json",
+      filePath,
+    ],
+  );
+
+  if (
+    result.code !== 0 ||
+    !result.stdout.trim()
+  ) {
+    throw new Error(
+      `ffprobe failed while preparing Instagram video: ${
+        result.stderr.trim() || "unknown error"
+      }`,
+    );
+  }
+
+  try {
+    return JSON.parse(result.stdout);
+  } catch {
+    throw new Error(
+      "Unable to parse ffprobe output for Instagram video.",
+    );
+  }
+}
+
+async function prepareInstagramVideo({
+  filePath,
+  jobId,
+  log,
+}) {
+  const probe =
+    await probeMediaStreams(filePath);
+
+  const streams =
+    Array.isArray(probe.streams)
+      ? probe.streams
+      : [];
+
+  const video =
+    streams.find(
+      (stream) =>
+        stream?.codec_type === "video",
+    );
+
+  if (!video) {
+    return filePath;
+  }
+
+  const audio =
+    streams.find(
+      (stream) =>
+        stream?.codec_type === "audio",
+    );
+
+  const videoCodec =
+    String(
+      video.codec_name || "",
+    ).toLowerCase();
+
+  const pixelFormat =
+    String(
+      video.pix_fmt || "",
+    ).toLowerCase();
+
+  const audioCodec =
+    String(
+      audio?.codec_name || "",
+    ).toLowerCase();
+
+  const audioProfile =
+    String(
+      audio?.profile || "",
+    ).toLowerCase();
+
+  const videoCompatible =
+    videoCodec === "h264" &&
+    pixelFormat === "yuv420p";
+
+  const audioCompatible =
+    !audio ||
+    (
+      audioCodec === "aac" &&
+      (
+        audioProfile === "lc" ||
+        audioProfile.includes(
+          "low complexity",
+        )
+      )
+    );
+
+  const originalExtension =
+    path.extname(filePath);
+
+  const basePath =
+    originalExtension
+      ? filePath.slice(
+          0,
+          -originalExtension.length,
+        )
+      : filePath;
+
+  const finalPath =
+    originalExtension.toLowerCase() === ".mp4"
+      ? filePath
+      : `${basePath}.mp4`;
+
+  const temporaryPath =
+    `${basePath}.instagram-compatible.tmp.mp4`;
+
+  const args = [
+    "-hide_banner",
+    "-loglevel",
+    "warning",
+    "-y",
+    "-i",
+    filePath,
+    "-map",
+    "0:v:0",
+    "-map",
+    "0:a:0?",
+  ];
+
+  if (videoCompatible) {
+    args.push(
+      "-c:v",
+      "copy",
+    );
+  } else {
+    args.push(
+      "-c:v",
+      "libx264",
+      "-preset",
+      "veryfast",
+      "-crf",
+      "20",
+      "-pix_fmt",
+      "yuv420p",
+      "-profile:v",
+      "main",
+      "-level:v",
+      "4.1",
+      "-tag:v",
+      "avc1",
+    );
+  }
+
+  if (audio) {
+    if (audioCompatible) {
+      args.push(
+        "-c:a",
+        "copy",
+      );
+    } else {
+      args.push(
+        "-c:a",
+        "aac",
+        "-profile:a",
+        "aac_low",
+        "-b:a",
+        "128k",
+        "-ar",
+        "48000",
+      );
+    }
+  }
+
+  args.push(
+    "-movflags",
+    "+faststart",
+    "-threads",
+    "2",
+    temporaryPath,
+  );
+
+  log(
+    "instagram_video_prepare_started",
+    {
+      job_id: jobId,
+      video_codec: videoCodec || null,
+      pixel_format: pixelFormat || null,
+      audio_codec: audioCodec || null,
+      audio_profile:
+        audio?.profile || null,
+      transcode_video:
+        !videoCompatible,
+      transcode_audio:
+        Boolean(audio) &&
+        !audioCompatible,
+    },
+  );
+
+  const result =
+    await runProcess(
+      "ffmpeg",
+      args,
+    );
+
+  if (result.code !== 0) {
+    await rm(
+      temporaryPath,
+      { force: true },
+    );
+
+    throw new Error(
+      `Instagram compatibility conversion failed: ${
+        result.stderr.trim() ||
+        "unknown ffmpeg error"
+      }`,
+    );
+  }
+
+  const preparedStat =
+    await stat(temporaryPath);
+
+  if (
+    !preparedStat.isFile() ||
+    preparedStat.size <= 0
+  ) {
+    await rm(
+      temporaryPath,
+      { force: true },
+    );
+
+    throw new Error(
+      "Instagram compatibility conversion produced an invalid file.",
+    );
+  }
+
+  if (finalPath !== filePath) {
+    await rm(
+      finalPath,
+      { force: true },
+    );
+  }
+
+  await rename(
+    temporaryPath,
+    finalPath,
+  );
+
+  if (finalPath !== filePath) {
+    await rm(
+      filePath,
+      { force: true },
+    );
+  }
+
+  const finalProbe =
+    await probeMediaStreams(
+      finalPath,
+    );
+
+  const finalStreams =
+    Array.isArray(
+      finalProbe.streams
+    )
+      ? finalProbe.streams
+      : [];
+
+  const finalVideo =
+    finalStreams.find(
+      (stream) =>
+        stream?.codec_type === "video",
+    );
+
+  const finalAudio =
+    finalStreams.find(
+      (stream) =>
+        stream?.codec_type === "audio",
+    );
+
+  const finalStat =
+    await stat(finalPath);
+
+  log(
+    "instagram_video_prepared",
+    {
+      job_id: jobId,
+      video_codec:
+        finalVideo?.codec_name || null,
+      pixel_format:
+        finalVideo?.pix_fmt || null,
+      audio_codec:
+        finalAudio?.codec_name || null,
+      audio_profile:
+        finalAudio?.profile || null,
+      file_size:
+        finalStat.size,
+      video_transcoded:
+        !videoCompatible,
+      audio_transcoded:
+        Boolean(audio) &&
+        !audioCompatible,
+    },
+  );
+
+  return finalPath;
 }
 
 async function removeInfoJsonFiles(outputDir) {
@@ -764,6 +1120,8 @@ export function classifyDownloadError(errorText) {
   if (
     text.includes("sign in to confirm") ||
     text.includes("login required") ||
+    text.includes("redirect to login page") ||
+    text.includes("/accounts/login/") ||
     text.includes("authentication") ||
     text.includes("account authentication is required") ||
     text.includes("refresh-token")
@@ -871,7 +1229,20 @@ export async function downloadMedia({
       job_id: jobId,
       source_host: normalisedHostname(url),
       cookie_enabled: Boolean(cookieFile),
-      reddit_authenticated: Boolean(REDDIT_REFRESH_TOKEN),
+      linkedin_authenticated:
+        isLinkedIn(url) && Boolean(cookieFile),
+      instagram_authenticated:
+        isInstagram(url) && Boolean(cookieFile),
+      reddit_authenticated:
+        isReddit(url) &&
+        Boolean(
+          cookieFile ||
+          (
+            REDDIT_CLIENT_ID &&
+            REDDIT_USER_AGENT &&
+            REDDIT_REFRESH_TOKEN
+          )
+        ),
       preferred_engine: preferredEngine,
       playlist_enabled: shouldAllowPostPlaylist(url),
     });
@@ -903,6 +1274,7 @@ export async function downloadMedia({
             await downloadLinkedInPublicImages({
               url,
               outputDir,
+              cookieFile,
               log,
             });
 
@@ -943,7 +1315,12 @@ export async function downloadMedia({
         outputDir,
       );
 
-      if (currentFiles.length <= 1) {
+      const shouldRunYtDlpFallback =
+        isX(url)
+          ? currentFiles.length === 0
+          : currentFiles.length <= 1;
+
+      if (shouldRunYtDlpFallback) {
         await runEngine({
           engine: "yt-dlp",
           url,
@@ -1062,10 +1439,44 @@ export async function downloadMedia({
         artifactPath,
       );
 
+      if (
+        isInstagram(url) &&
+        previewKind === "video"
+      ) {
+        artifactPath =
+          await prepareInstagramVideo({
+            filePath: artifactPath,
+            jobId,
+            log,
+          });
+
+        [mimeType, previewKind] =
+          classifyMime(
+            artifactPath,
+          );
+      }
+
       await removeEmptyDirectories(outputDir, true);
     }
 
     const artifactStat = await stat(artifactPath);
+
+    if (artifactStat.size > maxBytes) {
+      await rm(
+        outputDir,
+        {
+          recursive: true,
+          force: true,
+        },
+      );
+
+      const error = new Error(
+        `Final media exceeds ${MAX_FILE_SIZE_MB} MB after preparation.`,
+      );
+
+      error.code = "size_limit";
+      throw error;
+    }
 
     log("media_collected", {
       job_id: jobId,
