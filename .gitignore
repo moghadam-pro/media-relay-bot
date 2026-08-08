@@ -1,0 +1,9 @@
+.env
+runtime/
+*.pem
+*.key
+*.log
+cookies.txt
+**/cookies/*.txt
+.DS_Store
+node_modules/
