@@ -428,17 +428,63 @@ function buildCompletion({
   access,
 }) {
   const metadata = result.metadata || {};
+
   const title = String(
     metadata.title || "",
   ).trim();
+
   const uploader = String(
     metadata.uploader || "",
   ).trim();
+
   const description = String(
     metadata.description || "",
   ).trim();
+
   const originalUrl =
     metadata.webpage_url || "";
+
+  const isDirectVideo =
+    result.previewKind === "video" &&
+    !result.isArchive;
+
+  if (isDirectVideo) {
+    const captionBudget = 900;
+
+    const inlineCaption =
+      description.slice(
+        0,
+        captionBudget,
+      );
+
+    const lines = [];
+
+    if (inlineCaption) {
+      lines.push(
+        "📝 Caption:",
+        inlineCaption +
+          (
+            description.length >
+            captionBudget
+              ? "…"
+              : ""
+          ),
+      );
+    }
+
+    if (lines.length > 0) {
+      lines.push("");
+    }
+
+    lines.push(
+      "⚠️ Link 24hr Available",
+    );
+
+    return {
+      text: lines.join("\n"),
+      remainingCaption: "",
+    };
+  }
 
   const lines = [
     result.isArchive
@@ -456,11 +502,16 @@ function buildCompletion({
   }
 
   if (title) {
-    lines.push("", `📌 ${title}`);
+    lines.push(
+      "",
+      `📌 ${title}`,
+    );
   }
 
   if (uploader) {
-    lines.push(`👤 ${uploader}`);
+    lines.push(
+      `👤 ${uploader}`,
+    );
   }
 
   if (originalUrl) {
@@ -470,19 +521,24 @@ function buildCompletion({
   }
 
   const captionBudget = 1500;
-  const inlineCaption = description.slice(
-    0,
-    captionBudget,
-  );
+
+  const inlineCaption =
+    description.slice(
+      0,
+      captionBudget,
+    );
 
   if (inlineCaption) {
     lines.push(
       "",
       "📝 Caption:",
       inlineCaption +
-        (description.length > captionBudget
-          ? "…"
-          : ""),
+        (
+          description.length >
+          captionBudget
+            ? "…"
+            : ""
+        ),
     );
   }
 
@@ -496,8 +552,11 @@ function buildCompletion({
   );
 
   const remainingCaption =
-    description.length > captionBudget
-      ? description.slice(captionBudget)
+    description.length >
+    captionBudget
+      ? description.slice(
+          captionBudget,
+        )
       : "";
 
   return {
@@ -542,25 +601,54 @@ async function processJob(job) {
       access,
     });
 
+    const isDirectVideo =
+      result.previewKind === "video" &&
+      !result.isArchive;
+
     const replyMarkup = access.downloadUrl
       ? {
-          inline_keyboard: [
-            [
-              {
-                text: "♾️ Keep permanently",
-                callback_data:
-                  `keep:${access.token}`,
-              },
-            ],
-          ],
+          inline_keyboard: isDirectVideo
+            ? [
+                [
+                  {
+                    text:
+                      `⬇️ Download · ${formatBytes(result.artifactSize)}`,
+                    url:
+                      access.downloadUrl,
+                  },
+                ],
+                [
+                  {
+                    text:
+                      "♾️ Keep permanently",
+                    callback_data:
+                      `keep:${access.token}`,
+                  },
+                ],
+              ]
+            : [
+                [
+                  {
+                    text:
+                      "♾️ Keep permanently",
+                    callback_data:
+                      `keep:${access.token}`,
+                  },
+                ],
+              ],
         }
       : null;
+
+    const telegramPreviewUrl =
+      result.previewKind === "video"
+        ? access.mediaUrl
+        : access.previewUrl;
 
     await editStatus(
       job,
       completion.text,
       replyMarkup,
-      access.previewUrl,
+      telegramPreviewUrl,
     );
 
     if (
@@ -770,18 +858,36 @@ async function handleCallbackQuery(
   }
 
   let updatedText = message.text.replace(
-    /⚠️ This link expires automatically unless a trusted user keeps it permanently\.?/u,
-    "♾️ This file is permanent and will not be removed by the expiry timer.",
+    /⚠️ (?:This link expires automatically unless a trusted user keeps it permanently\.?|Link 24hr Available)/u,
+    "♾️ Link kept permanently",
   );
 
   if (
     !updatedText.includes(
-      "♾️ This file is permanent",
+      "♾️ Link kept permanently",
     )
   ) {
     updatedText +=
-      "\n\n♾️ This file is permanent and will not be removed by the expiry timer.";
+      "\n\n♾️ Link kept permanently";
   }
+
+  const remainingKeyboard =
+    (
+      message.reply_markup
+        ?.inline_keyboard || []
+    )
+      .map(
+        (row) =>
+          row.filter(
+            (button) =>
+              !String(
+                button.callback_data || "",
+              ).startsWith("keep:"),
+          ),
+      )
+      .filter(
+        (row) => row.length > 0,
+      );
 
   await telegram(
     "editMessageText",
@@ -793,7 +899,8 @@ async function handleCallbackQuery(
         is_disabled: true,
       },
       reply_markup: {
-        inline_keyboard: [],
+        inline_keyboard:
+          remainingKeyboard,
       },
     },
   );
