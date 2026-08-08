@@ -4,18 +4,21 @@ This document records real deployment observations from the media relay without 
 
 ## Confirmed working
 
-### Direct video delivery
+### Direct video delivery and Telegram-native playback
 
-The relay successfully serves direct video artifacts with separate behaviors for download and inline preview:
+The relay successfully serves direct video artifacts with separate behaviors for download and inline playback:
 
 - `/d/<token>` returns the media as an attachment.
 - `/m/<token>` returns the media inline with byte-range support.
-- `/p/<token>` returns an Open Graph preview document.
-- Telegram video preview works for known-good video sources.
+- Telegram can consume the direct `/m/<token>` URL as a native playable video link without the bot uploading the file through `sendVideo`.
+- tested Instagram, TikTok, and Reddit single-video posts all rendered as playable video inside Telegram using the direct `/m/<token>` URL.
+- no `telegram_preview_failed` event was observed in the successful regression run.
+
+This is now the preferred video-delivery path because it avoids a second bot upload and keeps the original server-side file as the single media source. The `/d/<token>` URL remains available as the explicit download endpoint.
 
 ### Instagram authenticated extraction
 
-Instagram extraction is now broadly successful after a valid Netscape-format Instagram cookie file became visible inside the container.
+Instagram extraction is broadly successful after a valid Netscape-format Instagram cookie file became visible inside the container.
 
 Observed results:
 
@@ -24,9 +27,8 @@ Observed results:
 - `gallery-dl` successfully downloads tested carousel posts;
 - a tested two-item carousel produced a ZIP archive;
 - disabling `extractor.instagram.previews` prevents a single video or Reel from being incorrectly counted as video + preview image and ZIP-wrapped;
-- tested single Instagram videos now return as one direct media artifact.
-
-Remaining Instagram issue: tested single Instagram videos currently do not produce the same Telegram rich video link preview as other known-good video sources. The next fix should improve the relay-owned Open Graph preview by adding a generated poster image and richer video metadata while keeping the direct `/m/<token>` video stream.
+- tested single Instagram videos return as one direct MP4 artifact;
+- tested Instagram video links render natively inside Telegram when the bot uses the direct `/m/<token>` URL as the link preview target.
 
 Lesson: an environment variable pointing to a cookie file is not enough. Verify the file exists on the host, is mounted into the container, is valid Netscape format, and is actually selected by the platform router.
 
@@ -38,9 +40,14 @@ Observed result:
 
 - `gallery-dl` succeeded;
 - one MP4 artifact was collected;
-- `yt-dlp` still received the original 403, but the successful gallery-dl result was sufficient.
+- `yt-dlp` still received the original 403, but the successful gallery-dl result was sufficient;
+- the direct `/m/<token>` URL also rendered as playable video inside Telegram.
 
 Lesson: Reddit authentication can be platform-engine specific. A fallback engine does not need to succeed when the preferred engine already produced a valid artifact.
+
+### TikTok video regression
+
+A tested TikTok video produced one MP4 artifact and rendered inside Telegram from the direct `/m/<token>` URL.
 
 ### LinkedIn single-image fallback
 
@@ -75,6 +82,8 @@ Safety requirement: do not loosen the existing image-quality/UI filters globally
 ### YouTube
 
 YouTube remains a separate reliability problem on the datacenter egress IP due to anti-bot/authentication behavior. It is intentionally tracked independently so fixes do not regress other platforms.
+
+Current upstream direction from yt-dlp should be evaluated before further implementation: use a PO Token Provider with the `mweb` client rather than relying on manually extracted PO tokens.
 
 ## Operational lesson
 
