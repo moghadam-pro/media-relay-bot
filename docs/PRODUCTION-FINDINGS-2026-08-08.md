@@ -1,99 +1,130 @@
-# Production Findings — 2026-08-08
+# Production Findings — 2026-08-08 to 2026-08-09
 
-This document records real deployment observations from the media relay without including production secrets, Telegram IDs, cookies, server IPs, or private domains.
+This document records real deployment observations without production secrets, Telegram IDs, cookie values, server IPs, or private domains.
 
 ## Confirmed working
 
 ### Direct video delivery and Telegram-native playback
 
-The relay successfully serves direct video artifacts with separate behaviors for download and inline playback:
+The relay serves direct video artifacts with separate download and inline semantics:
 
-- `/d/<token>` returns the media as an attachment.
-- `/m/<token>` returns the media inline with byte-range support.
-- Telegram can consume the direct `/m/<token>` URL as a native playable video link without the bot uploading the file through `sendVideo`.
-- tested Instagram, TikTok, and Reddit single-video posts all rendered as playable video inside Telegram using the direct `/m/<token>` URL.
-- no `telegram_preview_failed` event was observed in the successful regression run.
+- `/d/<token>` returns attachment download;
+- `/m/<token>` returns inline media with byte-range support;
+- Telegram can consume `/m/<token>` as a native playable video preview without a second `sendVideo` upload.
 
-This is now the preferred video-delivery path because it avoids a second bot upload and keeps the original server-side file as the single media source. The `/d/<token>` URL remains available as the explicit download endpoint.
+Tested successful direct-video sources included Instagram, TikTok, Reddit, and X/Twitter.
+
+### Compact direct-video result
+
+Direct video responses were simplified to remove duplicate filename/uploader/original-URL metadata from the success message. The current direct-video response contains post caption when available, a 24-hour link status, a size-labelled Download button, and Keep permanently.
 
 ### Instagram authenticated extraction
 
-Instagram extraction is broadly successful after a valid Netscape-format Instagram cookie file became visible inside the container.
+Observed:
 
-Observed results:
+- valid Netscape Instagram cookie visible inside container;
+- `cookie_enabled=true` and `instagram_authenticated=true`;
+- tested carousel posts downloaded through gallery-dl;
+- tested two-item carousel produced a ZIP;
+- `extractor.instagram.previews=false` prevented a single Reel from being counted as video + preview image;
+- tested single videos returned as one direct artifact.
 
-- the configured cookie file exists and contains the expected Instagram session cookie names;
-- jobs log `cookie_enabled: true` and `instagram_authenticated: true`;
-- `gallery-dl` successfully downloads tested carousel posts;
-- a tested two-item carousel produced a ZIP archive;
-- disabling `extractor.instagram.previews` prevents a single video or Reel from being incorrectly counted as video + preview image and ZIP-wrapped;
-- tested single Instagram videos return as one direct MP4 artifact;
-- tested Instagram video links render natively inside Telegram when the bot uses the direct `/m/<token>` URL as the link preview target.
+### Instagram mobile/Telegram compatibility preparation
 
-Lesson: an environment variable pointing to a cookie file is not enough. Verify the file exists on the host, is mounted into the container, is valid Netscape format, and is actually selected by the platform router.
+A failing Reel was inspected with FFprobe. Source characteristics were:
 
-### Reddit with authenticated cookies
+```text
+video: VP9 / yuv420p
+audio: AAC / HE-AAC
+container: MP4
+```
 
-A Reddit short-link that previously returned `403 Blocked` from both `gallery-dl` and `yt-dlp` succeeded after a Netscape-format Reddit cookie file was mounted and routed to the job.
+The file played in VLC desktop but did not play correctly in Telegram/mobile clients.
 
-Observed result:
+A manual compatibility transcode to H.264 Main + AAC-LC MP4 with faststart worked across the tested clients. The same logic was then automated for single Instagram video artifacts.
 
-- `gallery-dl` succeeded;
-- one MP4 artifact was collected;
-- `yt-dlp` still received the original 403, but the successful gallery-dl result was sufficient;
-- the direct `/m/<token>` URL also rendered as playable video inside Telegram.
+Production logs confirmed automatic transformation from VP9/HE-AAC to H.264/AAC-LC and registration of the final transformed file size.
 
-Lesson: Reddit authentication can be platform-engine specific. A fallback engine does not need to succeed when the preferred engine already produced a valid artifact.
+### Reddit authenticated cookies
+
+A Reddit short/share URL that returned HTTP 403 anonymously succeeded after a Netscape-format Reddit cookie was mounted and routed to the job.
+
+### X/Twitter authenticated extraction
+
+A tested X post initially failed:
+
+```text
+gallery-dl: Requesting guest token -> Unavailable
+yt-dlp: No video could be found in this tweet
+```
+
+The X cookie file existed in the container, but production code initially had no X branch in the cookie router. After adding `X_COOKIE_FILE` routing, the same tested request succeeded with `cookie_enabled=true`.
+
+### X/Twitter false ZIP regression
+
+Some authenticated single-video X posts became ZIP archives containing two media files because gallery-dl produced a valid video and yt-dlp still ran as a complement/fallback. The two tools produced different encodings, so exact hash deduplication could not identify them as the same logical media.
+
+Fix:
+
+```text
+X gallery-dl result >= 1 media -> stop
+X gallery-dl result == 0      -> yt-dlp fallback
+```
+
+Fresh tests then produced:
+
+```text
+media_count=1
+archive=false
+preview_kind=video
+attempts=[gallery-dl]
+```
 
 ### TikTok video regression
 
-A tested TikTok video produced one MP4 artifact and rendered inside Telegram from the direct `/m/<token>` URL.
+A tested TikTok video produced one MP4 and rendered in Telegram from `/m/<token>`.
 
 ### LinkedIn single-image fallback
 
-A LinkedIn image post that `yt-dlp` could not treat as video succeeded through the conservative LinkedIn image fallback:
+A LinkedIn image post that yt-dlp could not treat as video succeeded through the conservative image fallback and returned one direct image.
 
-- one high-confidence image candidate was accepted;
-- the artifact was returned directly instead of being ZIP-wrapped;
-- the old false-positive ZIP behavior was eliminated.
+## Paused / unresolved
 
-## Still unresolved
+### LinkedIn multi-image
 
-### LinkedIn multi-image posts
+Authenticated LinkedIn HTML contains many `/dms/image/`, `vectorImage`, `artifacts`, and `rootUrl` structures, but post media and page/UI entities are heavily normalized/referenced. The existing conservative fallback intentionally rejects low-confidence assets rather than returning profile/logo/default images.
 
-Authenticated LinkedIn cookies are successfully mounted and injected. The current conservative public-HTML image parser still finds only one low-confidence candidate for tested multi-image posts, and correctly rejects it instead of returning UI/default assets.
-
-A deeper diagnostic against the authenticated post page established that useful media structures are present somewhere in the HTML payload:
-
-- authenticated page request: HTTP 200;
-- page size: roughly 1.5 MB in the tested case;
-- multiple `/dms/image/` references are present;
-- many `vectorImage` markers are present;
-- `artifacts` and `rootUrl` structures are present.
-
-However, recursively scanning only the embedded JSON object that directly contains the target activity ID returned zero vector images. A second activity-related wrapper block also returned zero vectors. This indicates that LinkedIn's normalized page data stores the target activity and its media entities in separate referenced blocks or nested serialized response bodies.
-
-A direct request to the tested `/voyager/api/feed/updates/<URN>` endpoint returned HTTP 200 but its normalized response did not contain `VectorImage`/`artifacts` media data for that activity.
-
-Next direction: resolve references across embedded normalized-data blocks (including nested serialized `body` payloads), then extract only media entities associated with the target activity. Do not fall back to globally accepting every LinkedIn image URL on the page.
-
-Safety requirement: do not loosen the existing image-quality/UI filters globally. The previous false-positive behavior demonstrated that generic LinkedIn page assets can easily be mistaken for post media.
+This work is paused until a reliable association strategy or upstream extractor becomes available.
 
 ### YouTube
 
-YouTube remains a separate reliability problem on the datacenter egress IP due to anti-bot/authentication behavior. It is intentionally tracked independently so fixes do not regress other platforms.
+YouTube was tested separately so its anti-bot requirements would not regress confirmed platforms.
 
-Current upstream direction from yt-dlp should be evaluated before further implementation: use a PO Token Provider with the `mweb` client rather than relying on manually extracted PO tokens.
+Tests included:
 
-## Operational lesson
+- recent yt-dlp nightly;
+- Node.js JS runtime;
+- `curl_cffi`;
+- Netscape YouTube cookie copied to writable temp;
+- `mweb` client;
+- experimental BgUtils PO-token provider 1.3.1.
 
-Always distinguish these states:
+The provider loaded successfully, but the tested player API still returned `LOGIN_REQUIRED` / `Sign in to confirm you're not a bot` with and without cookies.
+
+Current interpretation: the original datacenter egress IP is a significant part of the failure. YouTube work is paused until a different trusted egress can be tested. The stable installation does not require the experimental provider.
+
+## Operational lessons
+
+Always distinguish:
 
 1. environment variable configured;
-2. cookie file exists on the host;
-3. cookie file is visible inside the container;
+2. cookie file exists on host;
+3. cookie file is visible in container;
 4. cookie file is valid Netscape format;
-5. extractor actually uses the cookie;
-6. authenticated request succeeds.
+5. platform router selects it;
+6. extractor actually uses it;
+7. upstream request succeeds.
 
-Treating all six as one boolean makes platform debugging unnecessarily difficult.
+The X investigation showed that steps 1-4 can all be correct while step 5 is still missing.
+
+Also distinguish exact duplicate files from logical duplicates. Different encodings of the same video will not share a SHA-256 hash; extractor routing must sometimes prevent the duplicate at source.
