@@ -1,102 +1,149 @@
 # Platform Notes
 
-Platform extraction is the least stable layer of the project. These notes separate application bugs from upstream/platform behavior observed during testing.
+Platform extraction is the least stable layer. These notes separate confirmed relay behavior from upstream/platform behavior.
 
 ## Instagram
 
-### Observed
+### Confirmed
 
-- Single-video posts have worked in the deployment.
-- At least one multi-image post failed during carousel testing.
+- Authenticated single-video/Reel extraction works on tested URLs.
+- Authenticated carousel extraction works on tested URLs.
+- Multi-item carousels become clean ZIP archives.
+- `extractor.instagram.previews=false` prevents a single Reel from becoming a false video+cover ZIP.
+- Direct `/m/<token>` playback works in Telegram after compatibility preparation when needed.
 
-### Current routing
+### Routing
 
 1. `gallery-dl` first.
-2. `yt-dlp` second when gallery output contains zero or one item.
-3. Post-style URLs allow bounded playlist extraction (`--playlist-end 20`).
+2. yt-dlp may complement/fallback when gallery output is empty or incomplete.
+3. Post/Reel URLs allow bounded playlist extraction.
+4. Single videos are FFprobed before registration.
+5. VP9/HE-AAC or otherwise incompatible streams are prepared as H.264/yuv420p + AAC-LC MP4 when necessary.
 
 ### Authentication
 
-Instagram extraction can behave differently without a logged-in cookie jar. The project supports an optional Netscape-format `INSTAGRAM_COOKIE_FILE` mounted read-only and copied per job.
+Optional Netscape file:
 
-### What to inspect when a carousel fails
-
-Look at the structured `attempts` field in `download_failed` logs. It records both gallery-dl and yt-dlp stderr without exposing cookie contents.
-
-## LinkedIn
-
-### Video
-
-LinkedIn video posts have worked for some tested URLs through yt-dlp. Some other post IDs return `Unable to extract video`.
-
-### Images
-
-`gallery-dl` does not currently provide stable released LinkedIn post support. The project therefore uses a conservative public-HTML fallback only after yt-dlp produces no media.
-
-The first fallback implementation was too broad and downloaded LinkedIn UI/default images. The current implementation groups `/dms/image/` CDN variants by asset ID, scores higher-resolution feedshare variants, and rejects small/default/profile/logo assets.
-
-### Single image
-
-A filtered single image is returned directly. It is not zipped.
-
-### Multi image
-
-Two or more high-confidence images are packaged into one ZIP together with `caption.txt` when text is available.
-
-### Limitation
-
-LinkedIn HTML is not a stable API. Multi-image support remains best-effort until a more reliable authenticated or upstream extractor is available.
-
-## Reddit
-
-### Observed
-
-A tested Reddit URL failed even though Reddit is supported by both downloader ecosystems.
-
-### Upstream change
-
-In 2026, yt-dlp reports cases where Reddit requires account authentication for JSON metadata. The project therefore treats Reddit authentication failures as a platform/authentication problem rather than a generic media error.
-
-### Current routing
-
-1. `gallery-dl` with Reddit previews enabled.
-2. Optional `REDDIT_REFRESH_TOKEN` passed to gallery-dl.
-3. yt-dlp fallback.
-
-If public anonymous extraction fails, configure a Reddit refresh token rather than weakening the relay's network/security boundaries.
-
-## YouTube
-
-### Observed
-
-YouTube is the main remaining reliability issue in the original deployment. Public videos can trigger `Sign in to confirm you're not a bot` from the server IP.
-
-### Current support
-
-- Nightly/pre-release yt-dlp.
-- Node JavaScript runtime.
-- `curl_cffi` dependency.
-- Optional Netscape cookie file.
-- Per-job writable cookie copies.
-
-### Remaining work
-
-PO-token-provider support is intentionally kept separate from the core relay because YouTube requirements evolve quickly.
+```env
+INSTAGRAM_COOKIE_FILE=/data/cookies/instagram.txt
+```
 
 ## X / Twitter
 
-Gallery-first routing is used so posts containing several media items are collected as a set instead of accepting the first successful video result.
+### Confirmed
+
+A guest extraction returned:
+
+```text
+Requesting guest token
+'Unavailable'
+```
+
+Routing a valid Netscape X session cookie fixed the tested request.
+
+### Routing
+
+X is gallery-first. After the production duplicate-ZIP issue, its fallback rule is intentionally stricter:
+
+```text
+gallery-dl media_count >= 1 -> do not run yt-dlp
+media_count == 0            -> yt-dlp fallback
+```
+
+This prevents two encodings of one single video from being treated as two separate media items.
+
+Optional cookie:
+
+```env
+X_COOKIE_FILE=/data/cookies/x.txt
+```
+
+## Reddit
+
+### Confirmed
+
+A tested Reddit short/share URL that returned HTTP 403 anonymously succeeded after a valid Netscape Reddit cookie was routed to the job.
+
+### Authentication options
+
+Cookie:
+
+```env
+REDDIT_COOKIE_FILE=/data/cookies/reddit.txt
+```
+
+Optional gallery-dl OAuth:
+
+```env
+REDDIT_CLIENT_ID=
+REDDIT_USER_AGENT=
+REDDIT_REFRESH_TOKEN=
+```
+
+Do not configure OAuth unless needed.
 
 ## TikTok
 
-Video downloads worked in testing, but both yt-dlp and gallery-dl can be affected by TikTok challenge changes. Treat failures as platform-specific and inspect engine attempts before changing application code.
+A tested video produced one MP4 artifact and rendered as a native Telegram preview through `/m/<token>`.
 
-## Telegram previews
+TikTok upstream challenges can still change without an application-code regression.
 
-The three-route preview architecture was validated with a previously working video:
+## LinkedIn
 
-- `/d/<token>` -> `Content-Disposition: attachment`
-- `/m/<token>` -> `Content-Disposition: inline`
-- `/p/<token>` -> HTML/Open Graph preview
+### Single image
 
-This part of the system is considered working and should not be changed while debugging platform extractors.
+Confirmed through the conservative LinkedIn image fallback. A valid single post image is returned directly instead of being ZIP-wrapped.
+
+### Cookies
+
+Optional:
+
+```env
+LINKEDIN_COOKIE_FILE=/data/cookies/linkedin.txt
+```
+
+The cookie can be used by yt-dlp and by the fallback HTTP request.
+
+### Multi-image
+
+Paused/best effort. Authenticated HTML contains normalized/referenced media structures, but broad extraction is intentionally avoided because LinkedIn pages also contain many UI/profile/default assets.
+
+The correct behavior is to fail cleanly rather than return unrelated images.
+
+## YouTube
+
+### Status
+
+Paused/unresolved on the original datacenter egress.
+
+### Tested
+
+- recent yt-dlp nightly;
+- Node.js JavaScript runtime;
+- `curl_cffi`;
+- writable per-job copy of a Netscape YouTube cookie;
+- `mweb` client;
+- experimental BgUtils HTTP PO-token provider 1.3.1.
+
+The provider loaded successfully, but the tested player API still returned:
+
+```text
+LOGIN_REQUIRED
+Sign in to confirm you're not a bot
+```
+
+with and without cookies.
+
+The stable installation therefore does not depend on a YouTube-specific PO-token sidecar. See `YOUTUBE-NOTES.md`.
+
+## Telegram delivery
+
+Confirmed route semantics:
+
+```text
+/d/<token> -> attachment
+/m/<token> -> inline media + Range requests
+/p/<token> -> Open Graph HTML
+```
+
+For direct video, `/m/<token>` is the preferred Telegram preview URL.
