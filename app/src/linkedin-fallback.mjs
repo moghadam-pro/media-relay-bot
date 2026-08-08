@@ -1,6 +1,7 @@
 import { createWriteStream } from "node:fs";
 import {
   mkdir,
+  readFile,
   rename,
   rm,
   stat,
@@ -33,6 +34,86 @@ function isLinkedInMediaHost(hostname) {
   return LINKEDIN_MEDIA_HOST_SUFFIXES.some((host) =>
     hostnameMatches(hostname, host),
   );
+}
+
+async function cookieHeaderFromNetscape(
+  cookieFile,
+  hostname = "www.linkedin.com",
+) {
+  if (!cookieFile) {
+    return "";
+  }
+
+  try {
+    const raw = await readFile(
+      cookieFile,
+      "utf8",
+    );
+
+    const targetHost = hostname
+      .toLowerCase()
+      .replace(/^www\./u, "");
+
+    const cookies = [];
+
+    for (const rawLine of raw.split(/\r?\n/u)) {
+      let line = rawLine.trim();
+
+      if (!line) {
+        continue;
+      }
+
+      if (
+        line.startsWith("#") &&
+        !line.startsWith("#HttpOnly_")
+      ) {
+        continue;
+      }
+
+      if (line.startsWith("#HttpOnly_")) {
+        line = line.slice("#HttpOnly_".length);
+      }
+
+      const fields = line.split("\t");
+
+      if (fields.length < 7) {
+        continue;
+      }
+
+      const [
+        domainRaw,
+        ,
+        ,
+        ,
+        ,
+        name,
+        value,
+      ] = fields;
+
+      const domain = domainRaw
+        .replace(/^\./u, "")
+        .toLowerCase();
+
+      if (
+        targetHost !== domain &&
+        !targetHost.endsWith(`.${domain}`)
+      ) {
+        continue;
+      }
+
+      if (!name) {
+        continue;
+      }
+
+      cookies.push(
+        `${name}=${value}`,
+      );
+    }
+
+    return cookies.join("; ");
+  } catch {
+    return "";
+  }
 }
 
 function decodeHtml(value) {
@@ -390,6 +471,7 @@ async function isUsefulPostImage(filePath) {
 export async function downloadLinkedInPublicImages({
   url,
   outputDir,
+  cookieFile = null,
   log = () => {},
 }) {
   const parsed = new URL(url);
@@ -402,6 +484,12 @@ export async function downloadLinkedInPublicImages({
     };
   }
 
+  const cookieHeader =
+    await cookieHeaderFromNetscape(
+      cookieFile,
+      parsed.hostname,
+    );
+
   const response = await fetchWithTimeout(
     parsed.toString(),
     {
@@ -412,6 +500,9 @@ export async function downloadLinkedInPublicImages({
         accept:
           "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "accept-language": "en-US,en;q=0.8",
+        ...(cookieHeader
+          ? { cookie: cookieHeader }
+          : {}),
       },
       redirect: "follow",
     },
@@ -451,6 +542,7 @@ export async function downloadLinkedInPublicImages({
 
   log("linkedin_image_candidates", {
     candidate_count: candidates.length,
+    authenticated: Boolean(cookieHeader),
   });
 
   await mkdir(outputDir, {
