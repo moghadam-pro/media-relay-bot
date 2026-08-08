@@ -1,23 +1,24 @@
 # Regression Testing
 
-This file records the production behaviors that should be preserved or fixed as the extractor layer evolves.
+This file records production behaviors that must be preserved or fixed as the extractor layer evolves.
 
-## Baseline from August 2026 testing
+## Production baseline — 2026-08-08 / v0.5.0
 
-| Scenario | Baseline | Expected after fix |
+| Scenario | Result | Current interpretation |
 |---|---|---|
 | Direct video download | PASS on multiple non-YouTube platforms | Must remain PASS |
-| Telegram video preview | PASS | Must remain PASS |
-| `/d/<token>` attachment headers | PASS | Must remain PASS |
-| `/m/<token>` inline headers | PASS | Must remain PASS |
-| `/p/<token>` preview HTML | PASS | Must remain PASS |
+| Telegram video preview | PASS | `/d`, `/m`, and `/p` must not regress |
 | Keep-permanently action | PASS | Must remain PASS |
-| LinkedIn single video | PASS for known working URLs | Must remain PASS |
-| LinkedIn single image | WRONG: false ZIP + low-quality/default assets | Direct high-confidence image; no ZIP |
-| LinkedIn multi-image | WRONG: LinkedIn default/UI images + empty gallery folder | ZIP only real post images + optional caption.txt |
-| Instagram carousel | FAIL for tested multi-image URL | Collect all post media and ZIP |
-| Reddit tested URL | FAIL | Classify auth/extractor failure; use gallery-dl refresh token when needed |
+| LinkedIn single video | PASS for known working URLs | Keep yt-dlp path |
+| LinkedIn single image | PASS | Conservative public HTML fallback returned one direct image |
+| LinkedIn multi-image — 3 tested posts | FAIL cleanly | False LinkedIn UI/default assets are now rejected; public HTML exposed only one low-confidence candidate, so authenticated extraction is the next path |
+| Instagram carousel | FAIL | gallery-dl was redirected to Instagram login; yt-dlp enumerated image entries but reported no video formats. Treat as authentication-required, not a generic video-format failure |
+| Reddit share URL `/r/.../s/...` | FAIL | Both gallery-dl and yt-dlp received HTTP 403 from Reddit on the datacenter IP. Test authenticated REST cookies or gallery-dl OAuth next |
 | YouTube | FAIL / anti-bot on datacenter IP | Tracked separately; do not regress other platforms |
+
+## Important artifact note
+
+ZIP files created before the v0.5.0 regression run must not be used to judge the current ZIP implementation. In the 2026-08-08 test, the newest listed ZIP artifacts were timestamped before the v0.5.0 LinkedIn multi-image tests. The current multi-image LinkedIn tests did not generate a ZIP; they failed after rejecting low-confidence assets.
 
 ## Header regression test
 
@@ -69,7 +70,7 @@ Expected archive shape:
 caption.txt              # only when text metadata exists
 ```
 
-The archive must not contain extractor working directories such as an empty `gallery/` folder.
+The archive must not contain extractor working directories such as `gallery/`.
 
 ## LinkedIn image tests
 
@@ -79,18 +80,21 @@ Expected:
 
 - `media_count = 1`
 - `archive = false`
-- artifact MIME is an image
+- image MIME type
 - direct `/d/` link points to the image
 - no default LinkedIn UI/logo/profile asset
 
-### Multi image
+### Multi-image
 
-Expected:
+Public unauthenticated HTML is not considered sufficient if it exposes only the Open Graph image. The next regression stage should test a read-only Netscape-format LinkedIn session cookie without logging cookie contents.
+
+Expected after authenticated extraction support:
 
 - `media_count >= 2`
 - `archive = true`
-- one ZIP containing only post images and optional caption text
-- no duplicate resolution variants of the same LinkedIn image asset
+- ZIP contains only post images and optional caption text
+- no duplicate resolution variants
+- no profile/logo/default assets
 
 Useful logs:
 
@@ -103,17 +107,24 @@ download_completed
 
 ## Instagram carousel tests
 
-Use a post with at least three visually distinct items so incomplete extraction is obvious.
+If gallery-dl reports a redirect to `/accounts/login/`, configure a valid Netscape-format Instagram cookie file and retest before treating the post as an extractor bug.
 
-Expected logs should show both the preferred engine and the final media count. If the gallery engine returns zero or one item, yt-dlp is also attempted with bounded post-playlist extraction.
+Expected after authentication:
 
-If both engines fail, test again with a valid Instagram Netscape cookie file before treating the failure as an application bug.
+- gallery-dl collects all carousel items
+- multi-item posts produce a clean ZIP
+- Telegram message includes post text when metadata is available
 
 ## Reddit tests
 
-Always inspect `attempts` in `download_failed`.
+A 403 from both engines on `reddit.com/r/.../s/...` should be treated as access/authentication failure.
 
-If the message indicates account authentication is required, configure `REDDIT_REFRESH_TOKEN` and retest. Do not classify an upstream authentication requirement as a ZIP/queue/Telegram bug.
+Preferred next tests:
+
+1. authenticated Reddit Netscape cookies with gallery-dl REST mode;
+2. gallery-dl OAuth using client ID, user agent, and refresh token.
+
+Do not classify upstream authentication/access requirements as queue, ZIP, or Telegram bugs.
 
 ## Log collection
 
@@ -128,4 +139,4 @@ For failed media extraction, preserve:
 - engine attempts
 - downloader stderr
 
-Never paste bot tokens or cookie contents into test reports.
+Never paste bot tokens, refresh tokens, or cookie contents into test reports.
