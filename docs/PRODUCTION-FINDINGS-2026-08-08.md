@@ -13,17 +13,20 @@ The relay successfully serves direct video artifacts with separate behaviors for
 - `/p/<token>` returns an Open Graph preview document.
 - Telegram video preview works for known-good video sources.
 
-### Instagram carousel with authenticated cookies
+### Instagram authenticated extraction
 
-A previously failing Instagram carousel succeeded after a valid Netscape-format Instagram cookie file became visible inside the container.
+Instagram extraction is now broadly successful after a valid Netscape-format Instagram cookie file became visible inside the container.
 
-Observed result:
+Observed results:
 
-- the configured cookie file existed and contained the expected Instagram session cookie names;
-- the job logged `cookie_enabled: true` and `instagram_authenticated: true`;
-- `gallery-dl` completed successfully without a fallback attempt;
-- two media items were collected;
-- the relay produced a ZIP archive.
+- the configured cookie file exists and contains the expected Instagram session cookie names;
+- jobs log `cookie_enabled: true` and `instagram_authenticated: true`;
+- `gallery-dl` successfully downloads tested carousel posts;
+- a tested two-item carousel produced a ZIP archive;
+- disabling `extractor.instagram.previews` prevents a single video or Reel from being incorrectly counted as video + preview image and ZIP-wrapped;
+- tested single Instagram videos now return as one direct media artifact.
+
+Remaining Instagram issue: tested single Instagram videos currently do not produce the same Telegram rich video link preview as other known-good video sources. The next fix should improve the relay-owned Open Graph preview by adding a generated poster image and richer video metadata while keeping the direct `/m/<token>` video stream.
 
 Lesson: an environment variable pointing to a cookie file is not enough. Verify the file exists on the host, is mounted into the container, is valid Netscape format, and is actually selected by the platform router.
 
@@ -53,7 +56,7 @@ A LinkedIn image post that `yt-dlp` could not treat as video succeeded through t
 
 Authenticated LinkedIn cookies are successfully mounted and injected. The current conservative public-HTML image parser still finds only one low-confidence candidate for tested multi-image posts, and correctly rejects it instead of returning UI/default assets.
 
-A deeper diagnostic against the authenticated post page established that the useful media structure is present in the HTML payload itself:
+A deeper diagnostic against the authenticated post page established that useful media structures are present somewhere in the HTML payload:
 
 - authenticated page request: HTTP 200;
 - page size: roughly 1.5 MB in the tested case;
@@ -61,7 +64,11 @@ A deeper diagnostic against the authenticated post page established that the use
 - many `vectorImage` markers are present;
 - `artifacts` and `rootUrl` structures are present.
 
-A direct request to the tested `/voyager/api/feed/updates/<URN>` endpoint also returned HTTP 200, but its normalized response did not contain `VectorImage`/`artifacts` media data for that activity. Therefore the next implementation should parse the authenticated HTML's embedded JSON/data blocks and scope media extraction to the target activity rather than relying on that Voyager endpoint.
+However, recursively scanning only the embedded JSON object that directly contains the target activity ID returned zero vector images. A second activity-related wrapper block also returned zero vectors. This indicates that LinkedIn's normalized page data stores the target activity and its media entities in separate referenced blocks or nested serialized response bodies.
+
+A direct request to the tested `/voyager/api/feed/updates/<URN>` endpoint returned HTTP 200 but its normalized response did not contain `VectorImage`/`artifacts` media data for that activity.
+
+Next direction: resolve references across embedded normalized-data blocks (including nested serialized `body` payloads), then extract only media entities associated with the target activity. Do not fall back to globally accepting every LinkedIn image URL on the page.
 
 Safety requirement: do not loosen the existing image-quality/UI filters globally. The previous false-positive behavior demonstrated that generic LinkedIn page assets can easily be mistaken for post media.
 
