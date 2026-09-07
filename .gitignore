@@ -9,3 +9,12 @@ cookies.txt
 *.backup-*
 .DS_Store
 node_modules/
+
+# Cross-platform OS metadata
+._*
+.Spotlight-V100
+.Trashes
+[Tt]humbs.db
+ehthumbs.db
+[Dd]esktop.ini
+$RECYCLE.BIN/
